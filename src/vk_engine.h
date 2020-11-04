@@ -18,6 +18,8 @@ private:
 
 	void init_framebuffers();
 
+	void init_sync_structures();
+
 public:
 
 	bool _isInitialized{ false };
@@ -53,6 +55,9 @@ public:
 	VkRenderPass _renderPass;
 
 	std::vector<VkFramebuffer> _framebuffers;
+
+	VkSemaphore _presentSemaphore, _renderSemaphore;
+	VkFence _renderFence;
 
 	//initializes everything in the engine
 	void init();
