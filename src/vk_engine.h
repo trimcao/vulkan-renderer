@@ -20,6 +20,8 @@ private:
 
 	void init_sync_structures();
 
+	void init_pipelines();
+
 public:
 
 	bool _isInitialized{ false };
@@ -70,4 +72,8 @@ public:
 
 	//run main loop
 	void run();
+
+	// loads a shader module from a spir-v file. Returns false if it errors
+	bool load_shader_module(const char* filePath, VkShaderModule* outShaderModule);
+
 };
