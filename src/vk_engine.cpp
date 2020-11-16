@@ -128,6 +128,10 @@ void VulkanEngine::init_swapchain()
 	_swapchainImageViews = vkbSwapchain.get_image_views().value();
 
 	_swapchainImageFormat = vkbSwapchain.image_format;
+
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroySwapchainKHR(_device, _swapchain, nullptr);
+		});
 }
 
 void VulkanEngine::init_commands()
@@ -141,6 +145,10 @@ void VulkanEngine::init_commands()
 	// allocate the default command buffer that we will use for rendering
 	VkCommandBufferAllocateInfo cmdAllocInfo = vkinit::command_buffer_allocate_info(_commandPool, 1);
 	VK_CHECK(vkAllocateCommandBuffers(_device, &cmdAllocInfo, &_mainCommandBuffer));
+
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroyCommandPool(_device, _commandPool, nullptr);
+		});
 }
 
 void VulkanEngine::init_default_renderpass()
@@ -186,6 +194,9 @@ void VulkanEngine::init_default_renderpass()
 
 	VK_CHECK(vkCreateRenderPass(_device, &render_pass_info, nullptr, &_renderPass));
 
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroyRenderPass(_device, _renderPass, nullptr);
+		});
 }
 
 void VulkanEngine::init_framebuffers()
@@ -211,6 +222,11 @@ void VulkanEngine::init_framebuffers()
 	{
 		fb_info.pAttachments = &_swapchainImageViews[i];
 		VK_CHECK(vkCreateFramebuffer(_device, &fb_info, nullptr, &_framebuffers[i]));
+
+		_mainDeletionQueue.push_function([=]() {
+			vkDestroyFramebuffer(_device, _framebuffers[i], nullptr);
+			vkDestroyImageView(_device, _swapchainImageViews[i], nullptr);
+			});
 	}
 }
 
@@ -236,28 +252,25 @@ void VulkanEngine::init_sync_structures()
 
 	VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_presentSemaphore));
 	VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_renderSemaphore));
+
+	// enqueue the destruction of semaphores
+	_mainDeletionQueue.push_function([=]() {
+		vkDestroyFence(_device, _renderFence, nullptr);
+		vkDestroySemaphore(_device, _presentSemaphore, nullptr);
+		vkDestroySemaphore(_device, _renderSemaphore, nullptr);
+		});
 }
 
 void VulkanEngine::cleanup()
 {
 	if (_isInitialized) {
-		vkDestroyCommandPool(_device, _commandPool, nullptr);
+		// make sure the gpu has stopped doing its things
+		vkWaitForFences(_device, 1, &_renderFence, true, 1000000000);
 
-		vkDestroySwapchainKHR(_device, _swapchain, nullptr);
+		_mainDeletionQueue.flush();
 
-		// destroy the main renderpass
-		vkDestroyRenderPass(_device, _renderPass, nullptr);
-
-		// destroy swapchain resources
-		for (int i = 0; i < _framebuffers.size(); ++i)
-		{
-			vkDestroyFramebuffer(_device, _framebuffers[i], nullptr);
-
-			vkDestroyImageView(_device, _swapchainImageViews[i], nullptr);
-		}
-
-		vkDestroyDevice(_device, nullptr);
 		vkDestroySurfaceKHR(_instance, _surface, nullptr);
+		vkDestroyDevice(_device, nullptr);
 		vkb::destroy_debug_utils_messenger(_instance, _debug_messenger);
 		vkDestroyInstance(_instance, nullptr);
 
@@ -318,7 +331,15 @@ void VulkanEngine::draw()
 	vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	// actual draw
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipeline);
+	if (_selectedShader == 0)
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _trianglePipeline);
+	}
+	else
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _redTrianglePipeline);
+	}
+
 	vkCmdDraw(cmd, 3, 1, 0, 0);
 
 	// finalize the render pass
@@ -387,6 +408,17 @@ void VulkanEngine::run()
 		{
 			//close the window when user alt-f4s or clicks the X button			
 			if (e.type == SDL_QUIT) bQuit = true;
+			else if (e.type == SDL_KEYDOWN)
+			{
+				if (e.key.keysym.sym == SDLK_SPACE)
+				{
+					_selectedShader += 1;
+					if (_selectedShader > 1)
+					{
+						_selectedShader = 0;
+					}
+				}
+			}
 		}
 
 		draw();
@@ -463,6 +495,26 @@ void VulkanEngine::init_pipelines()
 		std::cout << "Triangle vertex shader successfully loaded" << '\n';
 	}
 
+	VkShaderModule redTriangleFragShader;
+	if (!load_shader_module("../../shaders/triangle.frag.spv", &redTriangleFragShader))
+	{
+		std::cout << "Error when building the triangle fragment shader module" << '\n';
+	}
+	else
+	{
+		std::cout << "Triangle fragment shader successfully loaded" << '\n';
+	}
+
+	VkShaderModule redTriangleVertexShader;
+	if (!load_shader_module("../../shaders/triangle.vert.spv", &redTriangleVertexShader))
+	{
+		std::cout << "Error when building the triangle vertex shader module" << '\n';
+	}
+	else
+	{
+		std::cout << "Triangle vertex shader successfully loaded" << '\n';
+	}
+
 	// build the pipeline layout that controls the inputs/outputs of the shader
 	// we are not using descriptor sets or other systems yet, so no need to use anything
 	// other than empty default
@@ -512,6 +564,34 @@ void VulkanEngine::init_pipelines()
 
 	// finally build the pipeline
 	_trianglePipeline = pipelineBuilder.build_pipeline(_device, _renderPass);
+
+	// clear the shader stages for the builder
+	pipelineBuilder._shaderStages.clear();
+
+	// add the other shaders
+	pipelineBuilder._shaderStages.push_back(
+		vkinit::pipeline_shader_stage_create_info(VK_SHADER_STAGE_VERTEX_BIT, redTriangleVertexShader));
+
+	pipelineBuilder._shaderStages.push_back(
+		vkinit::pipeline_shader_stage_create_info(VK_SHADER_STAGE_FRAGMENT_BIT, redTriangleFragShader));
+
+	// build the red triangle pipeline
+	_redTrianglePipeline = pipelineBuilder.build_pipeline(_device, _renderPass);
+
+	// destroy all shader modules, outside of the queue
+	vkDestroyShaderModule(_device, redTriangleVertexShader, nullptr);
+	vkDestroyShaderModule(_device, redTriangleFragShader, nullptr);
+	vkDestroyShaderModule(_device, triangleVertexShader, nullptr);
+	vkDestroyShaderModule(_device, triangleFragShader, nullptr);
+
+	_mainDeletionQueue.push_function([=]() {
+		// destroy the 2 pipelines we have created
+		vkDestroyPipeline(_device, _redTrianglePipeline, nullptr);
+		vkDestroyPipeline(_device, _trianglePipeline, nullptr);
+
+		// destroy the pipeline layout that they use
+		vkDestroyPipelineLayout(_device, _trianglePipelineLayout, nullptr);
+		});
 }
 
 VkPipeline PipelineBuilder::build_pipeline(VkDevice device, VkRenderPass pass)

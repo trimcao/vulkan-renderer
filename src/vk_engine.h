@@ -5,6 +5,29 @@
 
 #include <vk_types.h>
 #include <vector>
+#include <deque>
+#include <functional>
+
+struct DeletionQueue
+{
+	std::deque<std::function<void()>> deletors;
+
+	void push_function(std::function<void()>&& function)
+	{
+		deletors.push_back(function);
+	}
+
+	void flush()
+	{
+		// reverse iterate the deletion queue to execute all functions
+		for (auto it = deletors.rbegin(); it != deletors.rend(); it++)
+		{
+			(*it)(); // call functors
+		}
+
+		deletors.clear();
+	}
+};
 
 class VulkanEngine
 {
@@ -63,6 +86,11 @@ public:
 
 	VkPipelineLayout _trianglePipelineLayout;
 	VkPipeline _trianglePipeline;
+	VkPipeline _redTrianglePipeline;
+
+	int _selectedShader{ 0 };
+
+	DeletionQueue _mainDeletionQueue;
 
 	//initializes everything in the engine
 	void init();
